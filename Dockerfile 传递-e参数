@@ -1,0 +1,5 @@
+FROM harbor.hseduyun.net/hs/tomcat-8.5.9:latest
+ADD ROOT /opt/apache-tomcat-8.5.9/webapps/ROOT
+ENV zk=" "
+EXPOSE 8080
+ENTRYPOINT echo -e "\ndubbo.registry.address=zookeeper://$zk" >> /opt/apache-tomcat-8.5.9/webapps/ROOT/WEB-INF/dubbo.properties && /opt/apache-tomcat-8.5.9/bin/startup.sh && tail -F /opt/apache-tomcat-8.5.9/logs/catalina.out
