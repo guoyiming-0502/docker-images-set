@@ -1,0 +1,43 @@
+#!/usr/bin/env groovy
+def projectProperties = [
+		[$class: 'BuildDiscarderProperty', strategy: [$class: 'LogRotator', numToKeepStr: '30']],
+		parameters([
+		choice(
+		name: 'TIPS',
+		choices: '参数跟以往记录一样的可直接回放',
+	 ),
+	 stringParam(name: 'SVN_URL', defaultValue: '', description: '请输入完整svn地址'),
+	 choice(
+		name: 'ENV',	
+		choices: '192.168.0.19\n192.168.0.13',
+		description: '请选择部署环境:运城测试选择：192.168.0.19 运城线上选择：192.168.0.13'
+	 ),
+	 choice(
+		name: 'NAME',	
+		choices: 'hswisdomedu\nhsresource',
+		description: '请选择静态环境标识如:平台选择：hswisdomedu 资源选择：hsresource'
+	 ),
+	 choice(
+		name: 'YH',
+		choices: '"',
+		description: '默认分隔符忽略'
+	 )])
+]
+properties(projectProperties)
+
+podTemplate(label: 'mypod', cloud: 'kubernetes', containers: [
+		containerTemplate(name: 'scp', image: 'harbor.hseduyun.net/hs/scp_1913', command: 'cat', ttyEnabled: true),
+]) {
+
+	node('mypod1000') {
+
+		container('scp') {
+				stage('svn代码检出') {
+			checkout([$class: 'SubversionSCM', additionalCredentials: [], excludedCommitMessages: '', excludedRegions: '', excludedRevprop: '', excludedUsers: '', filterChangelog: false, ignoreDirPropChanges: false, includedRegions: '', locations: [[cancelProcessOnExternalsFail: true, credentialsId: '222', depthOption: 'infinity', ignoreExternalsOption: true, local: '.', remote: '${SVN_URL}']], quietOperation: true, workspaceUpdater: [$class: 'UpdateUpdater']])
+		       }
+				stage('scp数据拷贝') {
+				sh 	"scp -r * ${ENV}:/files/learn/${NAME}/assets/"
+                }		
+	    }
+	}
+}

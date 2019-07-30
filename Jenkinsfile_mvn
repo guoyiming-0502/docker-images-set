@@ -1,0 +1,97 @@
+#!/usr/bin/env groovy
+def projectProperties = [
+		[$class: 'BuildDiscarderProperty', strategy: [$class: 'LogRotator', numToKeepStr: '15']],
+		parameters([
+		choice(
+		name: 'TIPS',
+		choices: '参数跟以往记录一样的可直接回放',
+	 ),
+	 stringParam(name: 'SVN_URL', defaultValue: '', description: '请输入完整svn地址'),
+	 stringParam(name: 'Artifacts', defaultValue: '', description: '请输入包名关键字,与yaml文件同名'),
+	 stringParam(name: 'Config', defaultValue: '', description: '请输入配置文件名称spring.active.propertie=***'),
+	 stringParam(name: 'Denv', defaultValue: '', description: '-Denv配置参数,未使用apollo配置的项目请留空'),
+     stringParam(name: 'Cluster', defaultValue: '', description:'-Dapollo.cluster配置参数,未使用apollo配置的项目请留空'),
+	 stringParam(name: 'DOMAIN', defaultValue: '', description: '请输入部署web项目域名，RPC留空'),
+	 stringParam(name: 'MVN', defaultValue: '', description: '请输入MVN参数，不需要请留空'),
+	 choice(
+		name: 'ENV',	
+		choices: 'test\nyctest\nspttest\nkxtest\ndemo\nwbl\nyc\ngz\nkx',
+		description: '请选择部署到的环境:测试(万柏林)、测试(运城)、测试(省平台)、测试(市科协)、演示、万柏林、运城、贵州、科协'
+	 ),
+	 choice(
+		name: 'YH',
+		choices: '"',
+		description: '默认分隔符忽略'
+	 )])
+]
+properties(projectProperties)
+
+podTemplate(label: 'mypod', cloud: 'kubernetes', 
+        containers: [
+		containerTemplate(name: 'maven', image: 'harbor.hseduyun.net/hs/maven:v2', command: 'cat', ttyEnabled: true),
+		containerTemplate(name: 'docker', image: 'harbor.hseduyun.net/hs/docker', command: 'cat', ttyEnabled: true),
+		containerTemplate(name: 'kubectl', image: 'harbor.hseduyun.net/hs/k8s-kubectl', command: 'cat', ttyEnabled: true)
+        ],
+		volumes: [
+				persistentVolumeClaim(claimName: 'pvc-maven', mountPath: '/mnt/.m2', readOnly: false), 
+				hostPathVolume(hostPath: '/var/run/docker.sock', mountPath: '/var/run/docker.sock'),
+				hostPathVolume(hostPath: '/root/.kube', mountPath: '/root/.kube')
+		]) 
+{node('mypod') 
+        {
+		container('maven') {
+			stage('svn代码检出') {
+				checkout([$class: 'SubversionSCM', additionalCredentials: [], excludedCommitMessages: '', excludedRegions: '', excludedRevprop: '', excludedUsers: '', filterChangelog: false, ignoreDirPropChanges: false, includedRegions: '', locations: [[cancelProcessOnExternalsFail: true, credentialsId: '222', depthOption: 'infinity', ignoreExternalsOption: true, local: '.', remote: '${SVN_URL}']], quietOperation: true, workspaceUpdater: [$class: 'UpdateUpdater']])
+			}
+
+			stage('maven编译打包') { 
+			if(fileExists('pom.xml')) 
+				{
+			    sh 'echo \'http://mirrors.aliyun.com/alpine/v3.6/main/\' > /etc/apk/repositories && apk update && apk add curl'
+				sh 'ENV=$(echo ${ENV}) && curl \'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=4d6e1917-549e-438a-bfb3-72914f927168\' -H \'Content-Type: application/json\' -d \'{"msgtype": "text","text": { "content": "Job:\'$JOB_NAME\' 部署环境:\'$ENV\' 部署项目:\'$Artifacts\'"}}\''
+				sh 'Artifacts=$(echo ${Artifacts})'
+				sh 'if [ -n ${MVN} ]; then mvn clean install -D skip.test=true -P ${MVN}; fi'
+				sh 'if [ -d target ]; then mkdir wraptmp && mv target wraptmp; fi'
+				sh 'ls */target/*${Artifacts}*.*ar'
+				}
+			 else {
+				sh 'mkdir -p tmp/target && mv  *${Artifacts}*.*ar tmp/target'
+			}
+	
+		    stage('编写yaml部署文件') {
+				sh 	'Artifacts=$(echo ${Artifacts})'
+				sh  'rm -f ${Artifacts}.yaml'
+				sh  "echo 根据关键字下载yaml文件:你的关键字是${Artifacts}"
+		        sh  "echo '如果下载报404找不到yaml文件 请确认关键字是否正确或联系ops !!'" 
+				sh  "wget http://yaml.hseduyun.net/taiyuan/${ENV}/${Artifacts}.yaml"
+				sh  "sed -i \"s/hsns/${ENV}/g\" ${Artifacts}.yaml"
+				sh  "sed -i \"s/hskw/${Artifacts}/g\" ${Artifacts}.yaml"
+				sh  "sed -i \"s/hsimage/${ENV}-${Artifacts}/g\" ${Artifacts}.yaml"
+				sh  "sed -i \"s/latest/v${BUILD_ID}/g\" ${Artifacts}.yaml"
+				sh  "sed -i \"s/hsdomain/${DOMAIN}/g\" ${Artifacts}.yaml"	
+            }
+			}    
+		}
+		container('docker') {
+			stage('编写Dockerfile') {
+				sh 'PKGNAME=`ls */target/*${Artifacts}*.*ar` && echo ${PKGNAME##*/} && \
+				echo FROM harbor.hseduyun.net/hs/jdk-1.8.0:v3 >Dockerfile && \
+				echo ADD */target/*${Artifacts}*.*ar /mnt/${PKGNAME##*/} >>Dockerfile && \
+				echo WORKDIR /mnt >>Dockerfile && \
+				echo ENTRYPOINT [${YH}java${YH}, ${YH}-jar${YH},${YH}/mnt/${PKGNAME##*/}${YH}] >>Dockerfile && \
+				if [  -n "${Config}" ]; then echo CMD [${YH}--spring.profiles.active=${Config}${YH}] >> Dockerfile;fi' 
+				sh 'PKGNAME=`ls */target/*${Artifacts}*.*ar` && echo ${PKGNAME##*/} && \
+				if [  -n "${Cluster}" ]; then sed -i "/ENTRYPOINT/d" Dockerfile&&sed -i "/CMD/d" Dockerfile&&echo ENTRYPOINT [${YH}java${YH}, ${YH}-jar${YH},${YH}-Denv=${Denv}${YH},${YH}-Dapollo.cluster=${Cluster}${YH},${YH}/mnt/${PKGNAME##*/}${YH},${YH}--spring.profiles.active=${Config}${YH}] >>Dockerfile;fi'
+}
+							
+			stage('docker镜像构建推送') {
+			   withDockerRegistry(credentialsId: '333', url: 'https://harbor.hseduyun.net/k8s') {docker.build('harbor.hseduyun.net/k8s/${ENV}-${Artifacts}:v${BUILD_ID}').push() }						
+			}
+			}
+		stage('k8s部署镜像') {
+			container('kubectl') {
+				sh "kubectl --kubeconfig=/root/.kube/config apply -f ${Artifacts}.yaml" 
+			}
+		}
+      	}
+ }
